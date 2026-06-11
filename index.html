@@ -412,12 +412,29 @@ function showMain() {
   }
 }
 
-function ensurePlayerExists(name) {
-  if (!players.find(p=>p.name.toLowerCase()===name.toLowerCase())) {
+async function ensurePlayerExists(name) {
+  // Query Supabase directly before inserting to prevent duplicate players
+  // when the same person opens the app on two devices at nearly the same time
+  try {
+    const existing = await sb('players?name=eq.' + encodeURIComponent(name) + '&select=id,name,color_idx');
+    if (existing && existing.length > 0) {
+      if (!players.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+        players.push(existing[0]);
+        render();
+      }
+      return;
+    }
     const p = { id:'p_'+Date.now(), name, color_idx: players.length % COLORS.length };
     players.push(p);
-    savePlayer(p);
+    await savePlayer(p);
     render();
+  } catch(e) {
+    if (!players.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+      const p = { id:'p_'+Date.now(), name, color_idx: players.length % COLORS.length };
+      players.push(p);
+      savePlayer(p);
+      render();
+    }
   }
 }
 
