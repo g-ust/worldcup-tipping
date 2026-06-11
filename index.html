@@ -662,7 +662,10 @@ function renderSchedule() {
             const isCorrect=result&&pick===result; const isWrong=result&&pick!==result;
             const cls=isCorrect?' correct':isWrong?' wrong':'';
             const style=cls?'':`style="background:${c.light};border-color:${c.border};color:${c.text}"`;
-            html+=`<span class="tip-chip${cls}" ${style} ${!result?`onclick="openTipModalForTipper(${m.id},'${p.id}')"`:''}><strong>${esc(p.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
+            const isMe=p.name.toLowerCase()===myName.toLowerCase();
+            const canEdit=!result&&(isMe||adminMode);
+            const chipCursor=canEdit?'cursor:pointer':'cursor:default';
+            html+=`<span class="tip-chip${cls}" ${style?style:'style=""'} style="${cls?'':c.light?`background:${c.light};border-color:${c.border};color:${c.text};`:''}${chipCursor}" ${canEdit?`onclick="openTipModalForTipper(${m.id},'${p.id}')"`:''}title="${canEdit?'Click to change':''}"><strong>${esc(p.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
           });
         } else if (!isTBD&&players.length) { html+=`<span class="empty-hint">Tap a team to tip</span>`; }
         html+=`</div><div class="card-footer"><span class="venue">📍 ${m.venue}</span>${adminMode&&!isTBD?`<button class="result-btn" onclick="openResultModal(${m.id})">${result?'✏️ Edit result':'+ Enter result'}</button>`:''}</div></div>`;
@@ -708,11 +711,19 @@ function renderScores() {
 // ── MODALS ────────────────────────────────────────────────────────────────────
 function openTipModal(matchId,preTeam) {
   if (!players.length) { showToast('Add players first!',true); return; }
-  if (players.length===1) { if (preTeam) { setTip(matchId,players[0].id,preTeam); return; } modalState={matchId,step:'team',playerId:players[0].id}; renderTipModal(); return; }
   const me=players.find(p=>p.name.toLowerCase()===myName.toLowerCase());
+  // Single player shortcut
+  if (players.length===1) {
+    if (preTeam) { setTip(matchId,players[0].id,preTeam); return; }
+    modalState={matchId,step:'team',playerId:players[0].id}; renderTipModal(); return;
+  }
+  // Known user tapping a team directly — go straight to their pick
   if (me&&preTeam) { setTip(matchId,me.id,preTeam); return; }
   if (me) { modalState={matchId,step:'team',playerId:me.id}; renderTipModal(); return; }
-  modalState={matchId,step:'tipper',preTeam}; renderTipModal();
+  // Admin mode — allow picking for anyone
+  if (adminMode) { modalState={matchId,step:'tipper',preTeam}; renderTipModal(); return; }
+  // Unknown user or name not in player list
+  showToast('Enter your name above to tip!',true);
 }
 function openTipModalForTipper(matchId,playerId) { modalState={matchId,step:'team',playerId}; renderTipModal(); }
 
