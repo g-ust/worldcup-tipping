@@ -100,10 +100,18 @@ main{max-width:1100px;margin:0 auto;padding:16px 12px 60px}
 .pick-btn.selected{border-color:#1a6b3c;background:#f0fdf4;color:#0f4025}
 .pick-btn.selected-green{border-color:#16a34a;background:#dcfce7;color:#14532d}
 .pick-btn.draw-btn{grid-column:1/-1}
-.clear-btn{width:100%;background:transparent;border:1px solid #e5e7eb;border-radius:6px;padding:7px;font-size:12px;color:#9ca3af;cursor:pointer;margin-bottom:5px;font-family:inherit}
-.back-btn{width:100%;background:#f3f4f6;border:none;border-radius:6px;padding:7px;font-size:12px;color:#6b7280;cursor:pointer;margin-bottom:5px;font-family:inherit;font-weight:600}
 .close-btn{width:100%;background:#0f4025;color:#fff;border:none;border-radius:8px;padding:9px;font-weight:700;font-size:14px;cursor:pointer;margin-top:4px;font-family:inherit}
+.back-btn{width:100%;background:#f3f4f6;border:none;border-radius:6px;padding:7px;font-size:12px;color:#6b7280;cursor:pointer;margin-bottom:5px;font-family:inherit;font-weight:600}
 .who-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:700;color:#fff;border:2px solid;margin-right:6px}
+.confirm-modal{background:#fff;border-radius:12px;padding:22px;width:min(360px,92vw);box-shadow:0 12px 40px rgba(0,0,0,0.3)}
+.confirm-modal h3{font-weight:800;font-size:16px;margin-bottom:8px}
+.confirm-modal p{font-size:13px;color:#6b7280;margin-bottom:16px}
+.confirm-input{width:100%;border:2px solid #e5e7eb;border-radius:6px;padding:8px 10px;font-size:14px;font-family:inherit;outline:none;margin-bottom:12px}
+.confirm-input:focus{border-color:#dc2626}
+.confirm-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn-cancel{background:#f3f4f6;border:none;border-radius:6px;padding:9px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit}
+.btn-danger{background:#dc2626;color:#fff;border:none;border-radius:6px;padding:9px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;opacity:0.4}
+.btn-danger.ready{opacity:1}
 .setup-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f3f4f6;padding:16px}
 .setup-box{background:#fff;border-radius:16px;padding:30px;max-width:400px;width:100%;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.10)}
 .setup-box h1{font-weight:900;font-size:23px;color:#111;margin-bottom:4px}
@@ -175,13 +183,15 @@ main{max-width:1100px;margin:0 auto;padding:16px 12px 60px}
 
 <div class="overlay" id="tipOverlay"    style="display:none" onclick="if(event.target===this)closeTipModal()"><div class="modal-box" id="tipModalBox"></div></div>
 <div class="overlay" id="resultOverlay" style="display:none" onclick="if(event.target===this)closeResultModal()"><div class="modal-box" id="resultModalBox"></div></div>
+<div class="overlay" id="confirmOverlay" style="display:none"><div class="confirm-modal" id="confirmModalBox"></div></div>
 <div class="toast" id="toast"></div>
 
 <script>
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const SB_URL  = 'https://vqwscntyqpwnlbpfjwex.supabase.co';
-const SB_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxd3NjbnR5cXB3bmxicGZqd2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwODI3NDQsImV4cCI6MjA5NjY1ODc0NH0.76YABsW_y3NmWLg06RSqI43M6IhIOXAAb3FhRvhhluo';
+const SB_URL = 'https://vqwscntyqpwnlbpfjwex.supabase.co';
+const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZxd3NjbnR5cXB3bmxicGZqd2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwODI3NDQsImV4cCI6MjA5NjY1ODc0NH0.76YABsW_y3NmWLg06RSqI43M6IhIOXAAb3FhRvhhluo';
 const POLL_MS = 6000;
+const HDR = { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' };
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────────
 const SCHEDULE = [
@@ -303,33 +313,41 @@ const COLORS=[
   {bg:'#65a30d',light:'#ecfccb',border:'#4d7c0f',text:'#365314'},
 ];
 
-// ── STATE ─────────────────────────────────────────────────────────────────────
-let state={tippers:[],tips:{},results:{}};
-let myName='';
-let activeFilter='all';
-let activeTab='tips';
-let adminMode=false;
-let modalState=null;
-let isSaving=false;
+// ── STATE (in-memory cache — source of truth is Supabase) ─────────────────────
+let players  = [];   // [{id, name, color_idx}]
+let tips     = {};   // {matchId: {playerId: team}}
+let results  = {};   // {matchId: winner}
+let myName   = '';
+let activeFilter = 'all';
+let activeTab    = 'tips';
+let adminMode    = false;
+let modalState   = null;
 
-// ── SUPABASE API ──────────────────────────────────────────────────────────────
-const SB_HEADERS={
-  'apikey': SB_KEY,
-  'Authorization': `Bearer ${SB_KEY}`,
-  'Content-Type': 'application/json',
-  'Prefer': 'return=minimal'
-};
+// ── SUPABASE HELPERS ──────────────────────────────────────────────────────────
+async function sb(path, method='GET', body=null) {
+  const opts = { method, headers: HDR };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, opts);
+  if (method==='GET') return r.json();
+  return r.ok;
+}
 
-async function loadData(silent) {
+// ── LOAD ALL DATA ─────────────────────────────────────────────────────────────
+async function loadAll(silent) {
   try {
-    const r = await fetch(`${SB_URL}/rest/v1/tipping_data?id=eq.main&select=data`, {
-      headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}` }
+    const [pRows, tRows, rRows] = await Promise.all([
+      sb('players?select=id,name,color_idx&order=created_at'),
+      sb('tips?select=player_id,match_id,team'),
+      sb('results?select=match_id,winner'),
+    ]);
+    players = pRows || [];
+    tips = {};
+    (tRows||[]).forEach(r => {
+      if (!tips[r.match_id]) tips[r.match_id] = {};
+      tips[r.match_id][r.player_id] = r.team;
     });
-    const rows = await r.json();
-    if (rows && rows.length > 0) {
-      const d = rows[0].data;
-      state = { tippers: d.tippers||[], tips: d.tips||{}, results: d.results||{} };
-    }
+    results = {};
+    (rRows||[]).forEach(r => { results[r.match_id] = r.winner; });
     if (!silent) showMain();
     render();
   } catch(e) {
@@ -337,21 +355,39 @@ async function loadData(silent) {
   }
 }
 
-async function saveData() {
-  if (isSaving) return;
-  isSaving = true;
-  setSavingPill(true);
-  try {
-    await fetch(`${SB_URL}/rest/v1/tipping_data?id=eq.main`, {
-      method: 'PATCH',
-      headers: SB_HEADERS,
-      body: JSON.stringify({ data: state })
-    });
-    setSavingPill(false);
-  } catch(e) {
-    showToast('Save failed — check connection.', true);
-  }
-  isSaving = false;
+// ── INDIVIDUAL SAVES (no more full overwrites) ────────────────────────────────
+
+// Upsert a single tip row — only touches this one cell
+async function saveTip(playerId, matchId, team) {
+  await sb('tips', 'POST', { player_id: playerId, match_id: matchId, team, updated_at: new Date().toISOString() });
+}
+
+// Delete a single tip row
+async function deleteTip(playerId, matchId) {
+  await sb(`tips?player_id=eq.${playerId}&match_id=eq.${matchId}`, 'DELETE');
+}
+
+// Upsert a single result row
+async function saveResult(matchId, winner) {
+  await sb('results', 'POST', { match_id: matchId, winner, updated_at: new Date().toISOString() });
+}
+
+// Delete a result row
+async function deleteResult(matchId) {
+  await sb(`results?match_id=eq.${matchId}`, 'DELETE');
+}
+
+// Insert a player row
+async function savePlayer(player) {
+  await sb('players', 'POST', player);
+}
+
+// Delete a player and all their tips
+async function deletePlayer(id) {
+  await Promise.all([
+    sb(`players?id=eq.${id}`, 'DELETE'),
+    sb(`tips?player_id=eq.${id}`, 'DELETE'),
+  ]);
 }
 
 // ── INIT ─────────────────────────────────────────────────────────────────────
@@ -361,7 +397,7 @@ function showMain() {
     myName = name;
     document.getElementById('setupScreen').style.display='none';
     document.getElementById('appScreen').style.display='block';
-    if (!state.tippers.find(t=>t.name.toLowerCase()===name.toLowerCase())) addTipperByName(name);
+    ensurePlayerExists(name);
   } else {
     document.getElementById('setupScreen').innerHTML=`
       <div class="setup-wrap"><div class="setup-box">
@@ -376,9 +412,18 @@ function showMain() {
   }
 }
 
+function ensurePlayerExists(name) {
+  if (!players.find(p=>p.name.toLowerCase()===name.toLowerCase())) {
+    const p = { id:'p_'+Date.now(), name, color_idx: players.length % COLORS.length };
+    players.push(p);
+    savePlayer(p);
+    render();
+  }
+}
+
 window.addEventListener('DOMContentLoaded', async () => {
-  await loadData(false);
-  setInterval(() => loadData(true), POLL_MS);
+  await loadAll(false);
+  setInterval(() => loadAll(true), POLL_MS);
 });
 
 function handleSetup() {
@@ -387,45 +432,74 @@ function handleSetup() {
   myName=name; localStorage.setItem('wc2026_name',name);
   document.getElementById('setupScreen').style.display='none';
   document.getElementById('appScreen').style.display='block';
-  if (!state.tippers.find(t=>t.name.toLowerCase()===name.toLowerCase())) addTipperByName(name);
-  else render();
+  ensurePlayerExists(name);
+  render();
   showToast(`Welcome, ${name}!`);
 }
 
 // ── TIPPERS ───────────────────────────────────────────────────────────────────
 function addTipper() {
   const input=document.getElementById('newPlayerInput'); const name=input.value.trim(); if (!name) return;
-  if (state.tippers.find(t=>t.name.toLowerCase()===name.toLowerCase())) { showToast('Name already added.',true); return; }
-  addTipperByName(name); input.value=''; showToast(`${name} added!`);
+  if (players.find(p=>p.name.toLowerCase()===name.toLowerCase())) { showToast('Name already added.',true); return; }
+  const p={id:'p_'+Date.now(), name, color_idx: players.length % COLORS.length};
+  players.push(p); savePlayer(p); input.value=''; render();
+  showToast(`${name} added!`);
 }
-function addTipperByName(name) {
-  state.tippers.push({id:'t_'+Date.now(),name,colorIdx:state.tippers.length%COLORS.length});
-  saveData(); render();
-}
+
 function removeTipper(id) {
-  const t=state.tippers.find(x=>x.id===id);
-  if (!confirm(`Remove ${t?.name} and all their picks?`)) return;
-  Object.keys(state.tips).forEach(mid=>{ if (state.tips[mid]) delete state.tips[mid][id]; });
-  state.tippers=state.tippers.filter(x=>x.id!==id);
-  saveData(); render();
+  const p=players.find(x=>x.id===id);
+  // Require typing name to confirm — prevents accidental deletion
+  showConfirmDelete(p);
+}
+
+function showConfirmDelete(p) {
+  const box=document.getElementById('confirmModalBox');
+  document.getElementById('confirmOverlay').style.display='flex';
+  box.innerHTML=`
+    <h3>Remove ${esc(p.name)}?</h3>
+    <p>This will delete all of ${esc(p.name)}'s tips permanently. Type their name to confirm.</p>
+    <input class="confirm-input" id="confirmInput" placeholder="Type name here…"
+      oninput="document.getElementById('confirmDeleteBtn').classList.toggle('ready', this.value.trim().toLowerCase()==='${p.name.toLowerCase()}')" />
+    <div class="confirm-btns">
+      <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
+      <button class="btn-danger" id="confirmDeleteBtn" onclick="doDeletePlayer('${p.id}','${escJ(p.name)}')">Remove</button>
+    </div>`;
+  setTimeout(()=>document.getElementById('confirmInput')?.focus(),100);
+}
+
+function closeConfirm() { document.getElementById('confirmOverlay').style.display='none'; }
+
+async function doDeletePlayer(id, name) {
+  const input=document.getElementById('confirmInput');
+  if (!input || input.value.trim().toLowerCase()!==name.toLowerCase()) return;
+  closeConfirm();
+  players=players.filter(x=>x.id!==id);
+  Object.keys(tips).forEach(mid=>{ if(tips[mid]) delete tips[mid][id]; });
+  await deletePlayer(id);
+  render(); showToast(`${name} removed.`);
 }
 
 // ── TIPS ─────────────────────────────────────────────────────────────────────
-function setTip(matchId,tipperId,team) {
-  if (!state.tips[matchId]) state.tips[matchId]={};
-  state.tips[matchId][tipperId]=team;
-  closeTipModal(); saveData(); render();
-  showToast(`${state.tippers.find(x=>x.id===tipperId)?.name}: ${team} ✓`);
+async function setTip(matchId, playerId, team) {
+  if (!tips[matchId]) tips[matchId]={};
+  tips[matchId][playerId]=team;
+  closeTipModal(); render();
+  await saveTip(playerId, matchId, team); // single-row upsert — can't affect anyone else
+  const p=players.find(x=>x.id===playerId);
+  showToast(`${p?.name}: ${team} ✓`);
 }
-function clearTip(matchId,tipperId) {
-  if (state.tips[matchId]) delete state.tips[matchId][tipperId];
-  closeTipModal(); saveData(); render();
+
+async function clearTip(matchId, playerId) {
+  if (tips[matchId]) delete tips[matchId][playerId];
+  closeTipModal(); render();
+  await deleteTip(playerId, matchId);
 }
 
 // ── RESULTS ───────────────────────────────────────────────────────────────────
-function setResult(matchId,winner) {
-  if (winner===null) delete state.results[matchId]; else state.results[matchId]=winner;
-  closeResultModal(); saveData(); render();
+async function setResult(matchId, winner) {
+  if (winner===null) { delete results[matchId]; await deleteResult(matchId); }
+  else { results[matchId]=winner; await saveResult(matchId, winner); }
+  closeResultModal(); render();
   showToast(winner?`Result: ${winner}`:'Result cleared');
 }
 
@@ -433,7 +507,7 @@ function setResult(matchId,winner) {
 async function syncResults() {
   const btn=document.getElementById('syncBtn'); const log=document.getElementById('syncLog');
   btn.disabled=true; log.textContent='Searching for completed results…';
-  const missing=SCHEDULE.filter(m=>m.phase==='Group Stage'&&m.home!=='TBD'&&!state.results[m.id]);
+  const missing=SCHEDULE.filter(m=>m.phase==='Group Stage'&&m.home!=='TBD'&&!results[m.id]);
   if (!missing.length) { log.textContent='All group stage results already recorded.'; btn.disabled=false; return; }
   log.textContent=`Checking ${missing.length} unresolved matches…`;
   const matchList=missing.map(m=>`ID ${m.id}: ${m.home} vs ${m.away} (${m.date}, Group ${m.group})`).join('\n');
@@ -449,8 +523,8 @@ ${matchList}
 Reply ONLY with JSON, no markdown:
 {"results":[{"id":0,"winner":"Mexico"},{"id":5,"winner":"Draw"}]}`;
   try {
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',headers:{'Content-Type':'application/json'},
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
+      headers:{'Content-Type':'application/json'},
       body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,
         tools:[{type:'web_search_20250305',name:'web_search'}],
         messages:[{role:'user',content:prompt}]})
@@ -462,8 +536,13 @@ Reply ONLY with JSON, no markdown:
     const found=JSON.parse(m[0]).results||[];
     if (!found.length) { log.textContent='No new completed results found.'; }
     else {
-      found.forEach(({id,winner})=>{ if (winner) state.results[id]=winner; });
-      await saveData(); render();
+      // Save each result individually
+      await Promise.all(found.map(({id,winner})=>{
+        if (!winner) return;
+        results[id]=winner;
+        return saveResult(id, winner);
+      }));
+      render();
       log.textContent=`Done — ${found.length} result${found.length!==1?'s':''} synced.`;
       showToast(`${found.length} result${found.length!==1?'s':''} synced!`);
     }
@@ -474,11 +553,11 @@ Reply ONLY with JSON, no markdown:
 // ── SCORING ───────────────────────────────────────────────────────────────────
 function calcScores(matches) {
   const scores={};
-  state.tippers.forEach(t=>{scores[t.id]={correct:0,tipped:0};});
+  players.forEach(p=>{scores[p.id]={correct:0,tipped:0};});
   matches.forEach(m=>{
-    const result=state.results[m.id]; if (!result) return;
-    const mt=state.tips[m.id]||{};
-    state.tippers.forEach(t=>{ if (mt[t.id]) { scores[t.id].tipped++; if (mt[t.id]===result) scores[t.id].correct++; } });
+    const result=results[m.id]; if (!result) return;
+    const mt=tips[m.id]||{};
+    players.forEach(p=>{ if (mt[p.id]) { scores[p.id].tipped++; if (mt[p.id]===result) scores[p.id].correct++; } });
   });
   return scores;
 }
@@ -486,8 +565,9 @@ function calcScores(matches) {
 // ── FILTERS ───────────────────────────────────────────────────────────────────
 function setFilter(f) {
   activeFilter=f;
-  ['All','Group','Knock'].forEach(x=>{ const el=document.getElementById('filter'+x); if(el) el.classList.remove('active'); });
-  document.getElementById(f==='all'?'filterAll':f==='group'?'filterGroup':'filterKnock').classList.add('active');
+  document.getElementById('filterAll').classList.toggle('active',f==='all');
+  document.getElementById('filterGroup').classList.toggle('active',f==='group');
+  document.getElementById('filterKnock').classList.toggle('active',f==='knockout');
   render();
 }
 function setTab(t) {
@@ -513,31 +593,26 @@ function getFiltered() {
 // ── RENDER ────────────────────────────────────────────────────────────────────
 function render() { renderPills(); renderPlayers(); activeTab==='scores'?renderScores():renderSchedule(); }
 
-function setSavingPill(saving) {
-  const el=document.getElementById('savingPill');
-  if (el) { el.textContent=saving?'Saving…':'✓ Live'; el.className='stat-pill '+(saving?'saving':'green'); }
-}
-
 function renderPills() {
   const matches=getFiltered();
-  const tipped=matches.filter(m=>state.tippers.some(t=>(state.tips[m.id]||{})[t.id])).length;
-  const results=matches.filter(m=>state.results[m.id]).length;
+  const tipped=matches.filter(m=>players.some(p=>(tips[m.id]||{})[p.id])).length;
+  const ri=matches.filter(m=>results[m.id]).length;
   let html=`<div class="stat-pill">${tipped}/${matches.length} tipped</div>`;
-  if (results>0) html+=`<div class="stat-pill gold">${results} results in</div>`;
-  html+=`<div class="stat-pill green" id="savingPill">✓ Live</div>`;
+  if (ri>0) html+=`<div class="stat-pill gold">${ri} results in</div>`;
+  html+=`<div class="stat-pill green">✓ Live</div>`;
   document.getElementById('statPills').innerHTML=html;
-  document.getElementById('headerSub').textContent=`Canada · Mexico · USA · ${state.tippers.length} player${state.tippers.length!==1?'s':''}`;
+  document.getElementById('headerSub').textContent=`Canada · Mexico · USA · ${players.length} player${players.length!==1?'s':''}`;
 }
 
 function renderPlayers() {
   const bar=document.getElementById('playersBar');
-  if (!state.tippers.length) { bar.innerHTML='<span class="players-label">Players:</span><span style="color:rgba(255,255,255,0.35);font-size:12px;font-style:italic">Add names above to start</span>'; return; }
+  if (!players.length) { bar.innerHTML='<span class="players-label">Players:</span><span style="color:rgba(255,255,255,0.35);font-size:12px;font-style:italic">Add names above to start</span>'; return; }
   const scores=calcScores(getFiltered());
   let html='<span class="players-label">Players:</span>';
-  state.tippers.forEach(t=>{
-    const c=COLORS[t.colorIdx]; const sc=scores[t.id];
-    const label=activeTab==='scores'&&sc?`${sc.correct}/${sc.tipped}`:SCHEDULE.filter(m=>(state.tips[m.id]||{})[t.id]).length;
-    html+=`<span class="player-chip" style="background:${c.bg};border-color:${c.border}">${esc(t.name)}<span class="player-count">${label}</span><button class="player-remove" onclick="removeTipper('${t.id}')">✕</button></span>`;
+  players.forEach(p=>{
+    const c=COLORS[p.color_idx]; const sc=scores[p.id];
+    const label=activeTab==='scores'&&sc?`${sc.correct}/${sc.tipped}`:SCHEDULE.filter(m=>(tips[m.id]||{})[p.id]).length;
+    html+=`<span class="player-chip" style="background:${c.bg};border-color:${c.border}">${esc(p.name)}<span class="player-count">${label}</span><button class="player-remove" onclick="removeTipper('${p.id}')" title="Remove ${esc(p.name)}">✕</button></span>`;
   });
   bar.innerHTML=html;
 }
@@ -553,8 +628,8 @@ function renderSchedule() {
     Object.entries(grouped[phase]).forEach(([date,dayMatches])=>{
       html+=`<div class="day-header">${date}<span class="match-count">${dayMatches.length} match${dayMatches.length!==1?'es':''}</span></div><div class="matches-grid">`;
       dayMatches.forEach(m=>{
-        const mt=state.tips[m.id]||{}; const result=state.results[m.id];
-        const withPick=state.tippers.filter(t=>mt[t.id]); const isTBD=m.home==='TBD';
+        const mt=tips[m.id]||{}; const result=results[m.id];
+        const withPick=players.filter(p=>mt[p.id]); const isTBD=m.home==='TBD';
         const bl=m.group==='R32'?'R of 32':m.group==='R16'?'R of 16':m.group==='QF'?'QF':m.group==='SF'?'SF':m.group==='3P'?'3rd':m.group==='FIN'?'Final':`Grp ${m.group}`;
         html+=`<div class="match-card${withPick.length?' has-tips':''}${result?' has-result':''}">
           <div class="card-meta"><span class="badge${isKO?' ko':''}">${bl}</span>
@@ -565,26 +640,27 @@ function renderSchedule() {
             <button class="team-btn${result===m.away?' winner':''}" ${isTBD?'disabled':''} onclick="openTipModal(${m.id},'${escJ(m.away)}')">${esc(m.away)}</button>
           </div><div class="chips-row">`;
         if (withPick.length) {
-          withPick.forEach(t=>{
-            const c=COLORS[t.colorIdx]; const pick=mt[t.id];
+          withPick.forEach(p=>{
+            const c=COLORS[p.color_idx]; const pick=mt[p.id];
             const isCorrect=result&&pick===result; const isWrong=result&&pick!==result;
             const cls=isCorrect?' correct':isWrong?' wrong':'';
             const style=cls?'':`style="background:${c.light};border-color:${c.border};color:${c.text}"`;
-            html+=`<span class="tip-chip${cls}" ${style} ${!result?`onclick="openTipModalForTipper(${m.id},'${t.id}')"`:''}><strong>${esc(t.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
+            html+=`<span class="tip-chip${cls}" ${style} ${!result?`onclick="openTipModalForTipper(${m.id},'${p.id}')"`:''}><strong>${esc(p.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
           });
-        } else if (!isTBD&&state.tippers.length) { html+=`<span class="empty-hint">Tap a team to tip</span>`; }
+        } else if (!isTBD&&players.length) { html+=`<span class="empty-hint">Tap a team to tip</span>`; }
         html+=`</div><div class="card-footer"><span class="venue">📍 ${m.venue}</span>${adminMode&&!isTBD?`<button class="result-btn" onclick="openResultModal(${m.id})">${result?'✏️ Edit result':'+ Enter result'}</button>`:''}</div></div>`;
       });
       html+='</div>';
     });
   });
   // Mini leaderboard
-  const scores=calcScores(matches); const ri=matches.filter(m=>state.results[m.id]).length;
-  if (ri&&state.tippers.length) {
-    const sorted=[...state.tippers].sort((a,b)=>(scores[b.id]?.correct||0)-(scores[a.id]?.correct||0));
+  const scores=calcScores(matches); const ri=matches.filter(m=>results[m.id]).length;
+  if (ri&&players.length) {
+    const sorted=[...players].sort((a,b)=>(scores[b.id]?.correct||0)-(scores[a.id]?.correct||0));
     html+=`<div class="leaderboard"><div class="lb-title">🏆 Leaderboard</div><div class="lb-subtitle">${ri} result${ri!==1?'s':''} recorded — tap Scores for full breakdown</div>`;
-    ['🥇','🥈','🥉'].forEach((medal,i)=>{ if (!sorted[i]) return; const t=sorted[i]; const c=COLORS[t.colorIdx]; const sc=scores[t.id]||{correct:0,tipped:0}; const pct=sc.tipped?Math.round(sc.correct/sc.tipped*100):0;
-      html+=`<div class="lb-row"><span style="font-size:18px;width:28px;text-align:center;flex-shrink:0">${medal}</span><span class="lb-name" style="color:${c.bg}">${esc(t.name)}</span><div class="lb-bar-wrap"><div class="lb-bar"><div class="lb-fill" style="width:${pct}%;background:${c.bg}"></div></div><div class="lb-bar-label">${sc.correct} correct of ${sc.tipped} tipped</div></div><span class="lb-score" style="color:${c.bg}">${sc.correct}<span style="font-size:12px;opacity:0.55;margin-left:2px">pts</span></span></div>`;
+    ['🥇','🥈','🥉'].forEach((medal,i)=>{
+      if (!sorted[i]) return; const p=sorted[i]; const c=COLORS[p.color_idx]; const sc=scores[p.id]||{correct:0,tipped:0}; const pct=sc.tipped?Math.round(sc.correct/sc.tipped*100):0;
+      html+=`<div class="lb-row"><span style="font-size:18px;width:28px;text-align:center;flex-shrink:0">${medal}</span><span class="lb-name" style="color:${c.bg}">${esc(p.name)}</span><div class="lb-bar-wrap"><div class="lb-bar"><div class="lb-fill" style="width:${pct}%;background:${c.bg}"></div></div><div class="lb-bar-label">${sc.correct} correct of ${sc.tipped} tipped</div></div><span class="lb-score" style="color:${c.bg}">${sc.correct}<span style="font-size:12px;opacity:0.55;margin-left:2px">pts</span></span></div>`;
     });
     html+='</div>';
   }
@@ -593,19 +669,19 @@ function renderSchedule() {
 
 function renderScores() {
   const matches=getFiltered(); const scores=calcScores(matches);
-  const ri=matches.filter(m=>state.results[m.id]).length;
+  const ri=matches.filter(m=>results[m.id]).length;
   if (!ri) { document.getElementById('mainContent').innerHTML=`<div class="no-results"><div class="icon">🏆</div><p>No results yet</p><small>Hit <strong>⚡ Auto-sync results</strong> to pull in completed match winners.</small></div>`; return; }
-  const sorted=[...state.tippers].sort((a,b)=>(scores[b.id]?.correct||0)-(scores[a.id]?.correct||0));
+  const sorted=[...players].sort((a,b)=>(scores[b.id]?.correct||0)-(scores[a.id]?.correct||0));
   const medals=['🥇','🥈','🥉'];
   let html=`<div class="leaderboard"><div class="lb-title">🏆 Leaderboard</div><div class="lb-subtitle">${ri} result${ri!==1?'s':''} recorded</div>`;
-  sorted.forEach((t,i)=>{ const c=COLORS[t.colorIdx]; const sc=scores[t.id]||{correct:0,tipped:0}; const pct=sc.tipped?Math.round(sc.correct/sc.tipped*100):0;
-    html+=`<div class="lb-row"><span style="font-size:20px;width:30px;text-align:center;flex-shrink:0">${medals[i]||'#'+(i+1)}</span><span class="lb-name" style="color:${c.bg}">${esc(t.name)}</span><div class="lb-bar-wrap"><div class="lb-bar"><div class="lb-fill" style="width:${pct}%;background:${c.bg}"></div></div><div class="lb-bar-label">${sc.correct} correct of ${sc.tipped} tipped (${pct}%)</div></div><span class="lb-score" style="color:${c.bg}">${sc.correct}<span style="font-size:12px;opacity:0.55;margin-left:2px">pts</span></span></div>`;
+  sorted.forEach((p,i)=>{ const c=COLORS[p.color_idx]; const sc=scores[p.id]||{correct:0,tipped:0}; const pct=sc.tipped?Math.round(sc.correct/sc.tipped*100):0;
+    html+=`<div class="lb-row"><span style="font-size:20px;width:30px;text-align:center;flex-shrink:0">${medals[i]||'#'+(i+1)}</span><span class="lb-name" style="color:${c.bg}">${esc(p.name)}</span><div class="lb-bar-wrap"><div class="lb-bar"><div class="lb-fill" style="width:${pct}%;background:${c.bg}"></div></div><div class="lb-bar-label">${sc.correct} correct of ${sc.tipped} tipped (${pct}%)</div></div><span class="lb-score" style="color:${c.bg}">${sc.correct}<span style="font-size:12px;opacity:0.55;margin-left:2px">pts</span></span></div>`;
   });
   html+='</div><div class="mbm-section"><div class="mbm-heading">Match breakdown</div>';
-  matches.filter(m=>state.results[m.id]).forEach(m=>{
-    const result=state.results[m.id]; const mt=state.tips[m.id]||{};
+  matches.filter(m=>results[m.id]).forEach(m=>{
+    const result=results[m.id]; const mt=tips[m.id]||{};
     html+=`<div class="mbm-row"><div class="mbm-header"><span class="mbm-match-name">${esc(m.home)} vs ${esc(m.away)}</span><span class="mbm-date">${m.date}</span></div><div><span class="mbm-result">Winner: ${esc(result)}</span></div><div class="mbm-chips">`;
-    state.tippers.forEach(t=>{ const pick=mt[t.id]; const ok=pick&&pick===result; const style=pick?(ok?'background:#dcfce7;color:#14532d;border-color:#86efac':'background:#fee2e2;color:#7f1d1d;border-color:#fca5a5'):'background:#f3f4f6;color:#9ca3af;border-color:#e5e7eb'; html+=`<span class="mbm-chip" style="${style}">${esc(t.name)}: ${pick?esc(pick)+' '+(ok?'✓':'✗'):'—'}</span>`; });
+    players.forEach(p=>{ const pick=mt[p.id]; const ok=pick&&pick===result; const style=pick?(ok?'background:#dcfce7;color:#14532d;border-color:#86efac':'background:#fee2e2;color:#7f1d1d;border-color:#fca5a5'):'background:#f3f4f6;color:#9ca3af;border-color:#e5e7eb'; html+=`<span class="mbm-chip" style="${style}">${esc(p.name)}: ${pick?esc(pick)+' '+(ok?'✓':'✗'):'—'}</span>`; });
     html+='</div></div>';
   });
   html+='</div>';
@@ -614,14 +690,14 @@ function renderScores() {
 
 // ── MODALS ────────────────────────────────────────────────────────────────────
 function openTipModal(matchId,preTeam) {
-  if (!state.tippers.length) { showToast('Add players first!',true); return; }
-  if (state.tippers.length===1) { if (preTeam) { setTip(matchId,state.tippers[0].id,preTeam); return; } modalState={matchId,step:'team',tipperId:state.tippers[0].id}; renderTipModal(); return; }
-  const me=state.tippers.find(t=>t.name.toLowerCase()===myName.toLowerCase());
+  if (!players.length) { showToast('Add players first!',true); return; }
+  if (players.length===1) { if (preTeam) { setTip(matchId,players[0].id,preTeam); return; } modalState={matchId,step:'team',playerId:players[0].id}; renderTipModal(); return; }
+  const me=players.find(p=>p.name.toLowerCase()===myName.toLowerCase());
   if (me&&preTeam) { setTip(matchId,me.id,preTeam); return; }
-  if (me) { modalState={matchId,step:'team',tipperId:me.id}; renderTipModal(); return; }
+  if (me) { modalState={matchId,step:'team',playerId:me.id}; renderTipModal(); return; }
   modalState={matchId,step:'tipper',preTeam}; renderTipModal();
 }
-function openTipModalForTipper(matchId,tipperId) { modalState={matchId,step:'team',tipperId}; renderTipModal(); }
+function openTipModalForTipper(matchId,playerId) { modalState={matchId,step:'team',playerId}; renderTipModal(); }
 
 function renderTipModal() {
   const m=SCHEDULE[modalState.matchId];
@@ -629,26 +705,25 @@ function renderTipModal() {
   let html=`<div class="modal-title">${esc(m.home)} <span style="color:#9ca3af;font-size:13px">vs</span> ${esc(m.away)}</div><div class="modal-sub">${m.date} · ${m.time} · ${m.venue}</div>`;
   if (modalState.step==='tipper') {
     html+=`<p class="modal-prompt">Who's picking?</p>`;
-    state.tippers.forEach(t=>{ const c=COLORS[t.colorIdx]; const ex=(state.tips[modalState.matchId]||{})[t.id]; html+=`<div class="tipper-row${ex?' has-pick':''}" style="${ex?`border-color:${c.border};background:${c.light}`:''}" onclick="selectTipper('${t.id}')"><span style="font-weight:700;color:${c.bg};font-size:15px">${esc(t.name)}</span><span style="font-size:13px;color:#6b7280">${ex?'✓ '+esc(ex):'No pick'}</span></div>`; });
+    players.forEach(p=>{ const c=COLORS[p.color_idx]; const ex=(tips[modalState.matchId]||{})[p.id]; html+=`<div class="tipper-row${ex?' has-pick':''}" style="${ex?`border-color:${c.border};background:${c.light}`:''}" onclick="selectPlayer('${p.id}')"><span style="font-weight:700;color:${c.bg};font-size:15px">${esc(p.name)}</span><span style="font-size:13px;color:#6b7280">${ex?'✓ '+esc(ex):'No pick'}</span></div>`; });
   } else {
-    const t=state.tippers.find(x=>x.id===modalState.tipperId); const c=t?COLORS[t.colorIdx]:COLORS[0];
-    if (t) html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span class="who-chip" style="background:${c.bg};border-color:${c.border}">${esc(t.name)}</span><span style="font-size:13px;color:#6b7280">picking</span></div>`;
-    const ex=t?(state.tips[modalState.matchId]||{})[t.id]:null;
+    const p=players.find(x=>x.id===modalState.playerId); const c=p?COLORS[p.color_idx]:COLORS[0];
+    if (p) html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px"><span class="who-chip" style="background:${c.bg};border-color:${c.border}">${esc(p.name)}</span><span style="font-size:13px;color:#6b7280">picking</span></div>`;
+    const ex=p?(tips[modalState.matchId]||{})[p.id]:null;
     html+=`<p class="modal-prompt">Pick the winner:</p><div class="pick-grid">`;
-    [m.home,m.away].forEach(team=>{ html+=`<button class="pick-btn${ex===team?' selected':''}" onclick="setTip(${modalState.matchId},'${modalState.tipperId}','${escJ(team)}')">${esc(team)}${ex===team?'<span style="display:block;font-size:11px;margin-top:2px;opacity:0.6">Current pick</span>':''}</button>`; });
+    [m.home,m.away].forEach(team=>{ html+=`<button class="pick-btn${ex===team?' selected':''}" onclick="setTip(${modalState.matchId},'${modalState.playerId}','${escJ(team)}')">${esc(team)}${ex===team?'<span style="display:block;font-size:11px;margin-top:2px;opacity:0.6">Current pick</span>':''}</button>`; });
     html+='</div>';
-    if (ex) html+=`<button class="clear-btn" onclick="clearTip(${modalState.matchId},'${modalState.tipperId}')">Clear pick</button>`;
-    if (state.tippers.length>1) html+=`<button class="back-btn" onclick="selectBack()">← Back</button>`;
+    if (players.length>1) html+=`<button class="back-btn" onclick="selectBack()">← Back</button>`;
   }
   html+=`<button class="close-btn" onclick="closeTipModal()">Close</button>`;
   document.getElementById('tipModalBox').innerHTML=html;
 }
-function selectTipper(id) { modalState.step='team'; modalState.tipperId=id; renderTipModal(); }
-function selectBack() { modalState.step='tipper'; modalState.tipperId=null; renderTipModal(); }
+function selectPlayer(id) { modalState.step='team'; modalState.playerId=id; renderTipModal(); }
+function selectBack() { modalState.step='tipper'; modalState.playerId=null; renderTipModal(); }
 function closeTipModal() { document.getElementById('tipOverlay').style.display='none'; modalState=null; }
 
 function openResultModal(matchId) {
-  const m=SCHEDULE[matchId]; const cur=state.results[matchId];
+  const m=SCHEDULE[matchId]; const cur=results[matchId];
   document.getElementById('resultOverlay').style.display='flex';
   document.getElementById('resultModalBox').innerHTML=`
     <div class="modal-title">Enter Result</div>
@@ -659,7 +734,7 @@ function openResultModal(matchId) {
       <button class="pick-btn${cur===m.away?' selected-green':''}" onclick="setResult(${matchId},'${escJ(m.away)}')">${esc(m.away)}${cur===m.away?'<span style="display:block;font-size:11px;margin-top:2px;opacity:0.65">✓ Recorded</span>':''}</button>
       <button class="pick-btn draw-btn${cur==='Draw'?' selected-green':''}" onclick="setResult(${matchId},'Draw')">Draw${cur==='Draw'?'<span style="display:block;font-size:11px;margin-top:2px;opacity:0.65">✓ Recorded</span>':''}</button>
     </div>
-    ${cur?`<button class="clear-btn" style="margin-top:8px" onclick="setResult(${matchId},null)">Clear result</button>`:''}
+    ${cur?`<button style="width:100%;background:transparent;border:1px solid #e5e7eb;border-radius:6px;padding:7px;font-size:12px;color:#9ca3af;cursor:pointer;margin-bottom:5px;font-family:inherit" onclick="setResult(${matchId},null)">Clear result</button>`:''}
     <button class="close-btn" onclick="closeResultModal()">Done</button>`;
 }
 function closeResultModal() { document.getElementById('resultOverlay').style.display='none'; modalState=null; }
