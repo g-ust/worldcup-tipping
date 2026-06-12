@@ -27,11 +27,8 @@ header{background:#0f4025;border-bottom:4px solid #f5c842}
 .filter-btn{background:rgba(255,255,255,0.08);border:1.5px solid transparent;color:rgba(255,255,255,0.5);border-radius:6px;padding:4px 9px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .filter-btn.active{background:#f5c842;color:#0f4025;border-color:#f5c842}
 .filter-btn.admin-on{background:rgba(239,68,68,0.18);color:#fca5a5;border-color:rgba(239,68,68,0.5)}
-.sync-bar{background:#0f2d1a;border-bottom:1px solid #1a4a2a;padding:8px 16px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px}
-.sync-btn{background:#f5c842;color:#0f4025;border:none;border-radius:6px;padding:6px 13px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;white-space:nowrap}
-.sync-btn:disabled{opacity:0.55;cursor:default}
-.sync-log{color:rgba(255,255,255,0.55);font-size:12px}
-.sync-hint{color:rgba(255,255,255,0.28);font-size:11px;font-style:italic}
+.results-bar{background:#0f2d1a;border-bottom:1px solid #1a4a2a;padding:8px 16px;display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.results-bar-hint{color:rgba(255,255,255,0.4);font-size:12px;font-style:italic}
 .players-bar{background:#1e7d46;padding:7px 14px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:36px}
 .players-label{color:rgba(255,255,255,0.5);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;margin-right:4px}
 .player-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:20px;font-size:12px;font-weight:700;color:#fff;border:2px solid}
@@ -66,6 +63,8 @@ main{max-width:1100px;margin:0 auto;padding:16px 12px 60px}
 .card-footer{display:flex;justify-content:space-between;align-items:center}
 .venue{font-size:10px;color:#9ca3af}
 .result-btn{font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;border-radius:4px;padding:2px 7px;cursor:pointer;font-family:inherit;font-weight:600;white-space:nowrap}
+.completed-badge{font-size:10px;color:#1d4ed8;background:#dbeafe;border:1px solid #93c5fd;border-radius:4px;padding:2px 6px;font-weight:600;white-space:nowrap}
+.sync-status{font-size:11px;color:rgba(255,255,255,0.4);font-style:italic;margin-left:4px}
 .leaderboard{background:#1c1c2e;border-radius:8px;padding:20px;margin-top:28px}
 .lb-title{color:#f5c842;font-weight:800;font-size:17px;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:4px}
 .lb-subtitle{color:rgba(255,255,255,0.35);font-size:12px;margin-bottom:16px}
@@ -164,12 +163,8 @@ main{max-width:1100px;margin:0 auto;padding:16px 12px 60px}
       <button class="filter-btn" id="adminBtn" onclick="toggleAdmin()" style="margin-left:6px">🔒 Results</button>
     </div>
   </div>
-  <div class="sync-bar">
-    <div style="display:flex;align-items:center;gap:8px">
-      <button class="sync-btn" id="syncBtn" onclick="syncResults()">⚡ Auto-sync results</button>
-      <span class="sync-log" id="syncLog"></span>
-    </div>
-    <span class="sync-hint">Pulls completed match winners automatically · manual entry via 🔒 Results</span>
+  <div class="results-bar" id="resultsBar">
+    <span class="results-bar-hint" id="resultsBarHint">Enable 🔒 Results in the toolbar to enter match winners</span>
   </div>
   <div class="players-bar" id="playersBar">
     <span class="players-label">Players:</span>
@@ -350,8 +345,19 @@ async function loadAll(silent) {
     (rRows||[]).forEach(r => { results[r.match_id] = r.winner; });
     if (!silent) showMain();
     render();
+    // Also try to fetch live match statuses in the background
+    if (!silent) fetchMatchStatuses();
   } catch(e) {
-    if (!silent) showMain();
+    if (!silent) {
+      // Show visible error with retry rather than silently loading empty state
+      document.getElementById('setupScreen').innerHTML=`
+        <div class="setup-wrap"><div class="setup-box">
+          <div style="font-size:44px;margin-bottom:12px">⚠️</div>
+          <h1 style="font-size:20px;margin-bottom:8px">Could not connect</h1>
+          <p style="margin-bottom:20px">Unable to reach the database. Check your connection and try again.</p>
+          <button class="setup-btn" onclick="location.reload()">Retry</button>
+        </div></div>`;
+    }
   }
 }
 
@@ -440,7 +446,13 @@ async function ensurePlayerExists(name) {
 
 window.addEventListener('DOMContentLoaded', async () => {
   await loadAll(false);
-  setInterval(() => loadAll(true), POLL_MS);
+  setInterval(() => {
+    // Don't re-render while a modal is open — avoids flicker mid-interaction
+    if (!modalState) {
+      loadAll(true);
+      fetchMatchStatuses(); // refresh match completion status periodically
+    }
+  }, POLL_MS);
 });
 
 function handleSetup() {
@@ -449,15 +461,19 @@ function handleSetup() {
   myName=name; localStorage.setItem('wc2026_name',name);
   document.getElementById('setupScreen').style.display='none';
   document.getElementById('appScreen').style.display='block';
-  ensurePlayerExists(name);
-  render();
+  ensurePlayerExists(name); // ensurePlayerExists calls render internally
   showToast(`Welcome, ${name}!`);
 }
 
 // ── TIPPERS ───────────────────────────────────────────────────────────────────
-function addTipper() {
+async function addTipper() {
   const input=document.getElementById('newPlayerInput'); const name=input.value.trim(); if (!name) return;
   if (players.find(p=>p.name.toLowerCase()===name.toLowerCase())) { showToast('Name already added.',true); return; }
+  // Check Supabase directly to prevent duplicates from simultaneous adds
+  try {
+    const existing=await sb('players?name=eq.'+encodeURIComponent(name)+'&select=id');
+    if (existing && existing.length>0) { showToast('Name already added.',true); await loadAll(true); return; }
+  } catch(e) { /* proceed with local check only if Supabase unreachable */ }
   const p={id:'p_'+Date.now(), name, color_idx: players.length % COLORS.length};
   players.push(p); savePlayer(p); input.value=''; render();
   showToast(`${name} added!`);
@@ -501,9 +517,16 @@ async function setTip(matchId, playerId, team) {
   if (!tips[matchId]) tips[matchId]={};
   tips[matchId][playerId]=team;
   closeTipModal(); render();
-  await saveTip(playerId, matchId, team); // single-row upsert — can't affect anyone else
-  const p=players.find(x=>x.id===playerId);
-  showToast(`${p?.name}: ${team} ✓`);
+  try {
+    await saveTip(playerId, matchId, team);
+    const p=players.find(x=>x.id===playerId);
+    showToast(`${p?.name}: ${team} ✓`);
+  } catch(e) {
+    // Revert local state and notify — tip was not saved
+    delete tips[matchId][playerId];
+    render();
+    showToast('Tip not saved — check your connection.',true);
+  }
 }
 
 async function clearTip(matchId, playerId) {
@@ -520,51 +543,92 @@ async function setResult(matchId, winner) {
   showToast(winner?`Result: ${winner}`:'Result cleared');
 }
 
-// ── AUTO SYNC ─────────────────────────────────────────────────────────────────
-async function syncResults() {
-  const btn=document.getElementById('syncBtn'); const log=document.getElementById('syncLog');
-  btn.disabled=true; log.textContent='Searching for completed results…';
-  const missing=SCHEDULE.filter(m=>m.phase==='Group Stage'&&m.home!=='TBD'&&!results[m.id]);
-  if (!missing.length) { log.textContent='All group stage results already recorded.'; btn.disabled=false; return; }
-  log.textContent=`Checking ${missing.length} unresolved matches…`;
-  const matchList=missing.map(m=>`ID ${m.id}: ${m.home} vs ${m.away} (${m.date}, Group ${m.group})`).join('\n');
-  const prompt=`You are a football results assistant for the 2026 FIFA World Cup.
-Use web search to find the final results for these completed matches.
-Only include matches that have FULLY FINISHED (full-time, not live or upcoming).
-For each finished match return the winner name exactly as shown, or "Draw" if it ended level.
-If not yet played or still live, omit it.
+// ── MATCH STATUS (worldcup26.ir) ─────────────────────────────────────────────
+// Tracks which matches are confirmed finished based on live API data.
+// completedMatchIds is a Set of match IDs confirmed finished by the API.
+// Falls back gracefully to date-based detection if API is unavailable.
 
-Matches:
-${matchList}
+let completedMatchIds = new Set();
+let statusLastFetched = null;
+const STATUS_CACHE_MS = 3 * 60 * 1000; // re-fetch at most every 3 minutes
 
-Reply ONLY with JSON, no markdown:
-{"results":[{"id":0,"winner":"Mexico"},{"id":5,"winner":"Draw"}]}`;
+// Date lookup: map schedule date strings to JS Date objects (ET timezone)
+// Matches start as early as 12pm ET — we consider a match day "done" 4 hrs after the last listed kickoff
+const DATE_CUTOFFS = (() => {
+  // Build a map of date string -> latest ET kickoff hour on that day
+  const map = {};
+  SCHEDULE.forEach(m => {
+    if (m.home === 'TBD') return;
+    // Parse time string like "3pm ET", "10pm ET", "12am ET"
+    const t = m.time.replace(' ET','').toLowerCase();
+    let h = parseInt(t);
+    if (t.includes('am') && h === 12) h = 0;
+    else if (t.includes('pm') && h !== 12) h += 12;
+    if (!map[m.date] || h > map[m.date]) map[m.date] = h;
+  });
+  return map;
+})();
+
+function isMatchDayPast(dateStr) {
+  // Returns true if the last match on this date started more than 2 hours ago (ET)
+  const latestKickoffHr = DATE_CUTOFFS[dateStr];
+  if (latestKickoffHr === undefined) return false;
+  // Get current ET time
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  // Parse the date string e.g. "Thu 11 Jun"
+  const parts = dateStr.split(' ');
+  const monthMap = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const day = parseInt(parts[1]);
+  const month = monthMap[parts[2]];
+  const year = 2026;
+  const matchEnd = new Date(year, month, day, latestKickoffHr + 2, 0, 0); // kickoff + 2h buffer
+  return nowET > matchEnd;
+}
+
+function isMatchLikelyDone(match) {
+  // First check the live API set
+  if (completedMatchIds.has(match.id)) return true;
+  // Fall back to date-based check
+  return isMatchDayPast(match.date);
+}
+
+async function fetchMatchStatuses() {
+  // Throttle: don't re-fetch if we fetched recently
+  if (statusLastFetched && (Date.now() - statusLastFetched) < STATUS_CACHE_MS) return;
   try {
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,
-        tools:[{type:'web_search_20250305',name:'web_search'}],
-        messages:[{role:'user',content:prompt}]})
+    const r = await fetch('https://worldcup26.ir/get/games', {
+      signal: AbortSignal.timeout(5000) // 5 second timeout
     });
-    if (!resp.ok) throw new Error('API error '+resp.status);
-    const data=await resp.json();
-    const text=(data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('');
-    const m=text.match(/\{[\s\S]*\}/); if (!m) throw new Error('No JSON in response');
-    const found=JSON.parse(m[0]).results||[];
-    if (!found.length) { log.textContent='No new completed results found.'; }
-    else {
-      // Save each result individually
-      await Promise.all(found.map(({id,winner})=>{
-        if (!winner) return;
-        results[id]=winner;
-        return saveResult(id, winner);
-      }));
-      render();
-      log.textContent=`Done — ${found.length} result${found.length!==1?'s':''} synced.`;
-      showToast(`${found.length} result${found.length!==1?'s':''} synced!`);
-    }
-  } catch(e) { log.textContent='Sync failed: '+e.message; showToast('Auto-sync failed. Use manual entry.',true); }
-  btn.disabled=false;
+    if (!r.ok) throw new Error('API unavailable');
+    const games = await r.json();
+    statusLastFetched = Date.now();
+
+    // Map API team names to our schedule — find matches by home/away team name
+    // The API returns games with home_team, away_team, status, home_score, away_score
+    const newCompleted = new Set();
+    (games || []).forEach(g => {
+      const status = (g.status || g.match_status || '').toLowerCase();
+      const isDone = status.includes('finish') || status.includes('full') ||
+                     status.includes('ft') || status === 'completed' ||
+                     status === 'ended' || status === '90';
+      if (!isDone) return;
+      // Find matching schedule entry
+      const home = (g.home_team || g.home || '').toLowerCase();
+      const away = (g.away_team || g.away || '').toLowerCase();
+      const match = SCHEDULE.find(m =>
+        m.home.toLowerCase() === home || m.away.toLowerCase() === away ||
+        home.includes(m.home.toLowerCase().split(' ')[0]) ||
+        away.includes(m.away.toLowerCase().split(' ')[0])
+      );
+      if (match) newCompleted.add(match.id);
+    });
+    completedMatchIds = newCompleted;
+    updateResultsBar();
+    render();
+  } catch(e) {
+    // Silently fall back to date-based detection — no user-visible error
+    statusLastFetched = Date.now(); // still throttle to avoid hammering
+  }
 }
 
 // ── SCORING ───────────────────────────────────────────────────────────────────
@@ -596,10 +660,40 @@ function setTab(t) {
 function toggleAdmin() {
   adminMode=!adminMode;
   const btn=document.getElementById('adminBtn');
-  btn.textContent=adminMode?'🔓 Admin':'🔒 Results';
+  btn.textContent=adminMode?'🔓 Admin on':'🔒 Results';
   btn.classList.toggle('admin-on',adminMode);
   document.getElementById('adminBanner').style.display=adminMode?'block':'none';
+  updateResultsBar();
   render();
+}
+
+function updateResultsBar() {
+  const hint=document.getElementById('resultsBarHint');
+  if (!hint) return;
+  // Only count matches that are likely finished (confirmed by API or date-based)
+  const completedMatches = SCHEDULE.filter(m => m.home!=='TBD' && isMatchLikelyDone(m));
+  const pendingResults = completedMatches.filter(m => !results[m.id]);
+  const enteredCount = Object.keys(results).length;
+  if (adminMode) {
+    if (completedMatches.length === 0) {
+      hint.textContent = 'No matches completed yet — check back after kick-off';
+    } else if (pendingResults.length === 0) {
+      hint.innerHTML = `All ${enteredCount} completed match result${enteredCount!==1?'s':''} entered ✓`;
+    } else {
+      hint.innerHTML = `<strong style="color:#f5c842">${pendingResults.length} completed match${pendingResults.length!==1?'es':''} missing a result</strong> — tap <strong>Enter result</strong> on the card`;
+    }
+  } else {
+    if (enteredCount > 0) {
+      const pending = pendingResults.length;
+      hint.textContent = pending > 0
+        ? `${enteredCount} result${enteredCount!==1?'s':''} recorded · ${pending} completed match${pending!==1?'es':''} still need a result — enable 🔒 Results`
+        : `${enteredCount} result${enteredCount!==1?'s':''} recorded ✓`;
+    } else if (completedMatches.length > 0) {
+      hint.textContent = `${completedMatches.length} match${completedMatches.length!==1?'es have':' has'} been played — enable 🔒 Results to enter winners`;
+    } else {
+      hint.textContent = 'Enable 🔒 Results in the toolbar to enter match winners';
+    }
+  }
 }
 function getFiltered() {
   if (activeFilter==='group') return SCHEDULE.filter(m=>m.phase==='Group Stage');
@@ -608,7 +702,7 @@ function getFiltered() {
 }
 
 // ── RENDER ────────────────────────────────────────────────────────────────────
-function render() { renderPills(); renderPlayers(); activeTab==='scores'?renderScores():renderSchedule(); }
+function render() { renderPills(); renderPlayers(); updateResultsBar(); activeTab==='scores'?renderScores():renderSchedule(); }
 
 function renderPills() {
   const matches=getFiltered();
@@ -665,10 +759,20 @@ function renderSchedule() {
             const isMe=p.name.toLowerCase()===myName.toLowerCase();
             const canEdit=!result&&(isMe||adminMode);
             const chipCursor=canEdit?'cursor:pointer':'cursor:default';
-            html+=`<span class="tip-chip${cls}" ${style?style:'style=""'} style="${cls?'':c.light?`background:${c.light};border-color:${c.border};color:${c.text};`:''}${chipCursor}" ${canEdit?`onclick="openTipModalForTipper(${m.id},'${p.id}')"`:''}title="${canEdit?'Click to change':''}"><strong>${esc(p.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
+            // Merge all styles into a single attribute to avoid silent override bug
+            const chipStyle=cls
+              ? `style="${chipCursor}"`
+              : `style="background:${c.light};border-color:${c.border};color:${c.text};${chipCursor}"`;
+            html+=`<span class="tip-chip${cls}" ${chipStyle} ${canEdit?`onclick="openTipModalForTipper(${m.id},'${p.id}')"`:''}title="${canEdit?'Click to change':''}"><strong>${esc(p.name)}</strong><span style="opacity:0.7;margin-left:2px">→ ${esc(pick)}</span>${result?`<span style="margin-left:2px">${isCorrect?'✓':'✗'}</span>`:''}</span>`;
           });
         } else if (!isTBD&&players.length) { html+=`<span class="empty-hint">Tap a team to tip</span>`; }
-        html+=`</div><div class="card-footer"><span class="venue">📍 ${m.venue}</span>${adminMode&&!isTBD?`<button class="result-btn" onclick="openResultModal(${m.id})">${result?'✏️ Edit result':'+ Enter result'}</button>`:''}</div></div>`;
+        const isDone = !isTBD && isMatchLikelyDone(m);
+        const awaitingResult = isDone && !result;
+        html+=`</div><div class="card-footer"><span class="venue">📍 ${m.venue}</span>
+          <div style="display:flex;align-items:center;gap:5px">
+            ${awaitingResult && !adminMode ? '<span class="completed-badge">⏱ Awaiting result</span>' : ''}
+            ${adminMode&&!isTBD?`<button class="result-btn" onclick="openResultModal(${m.id})">${result?'✏️ Edit result':'+ Enter result'}</button>`:''}
+          </div></div></div>`;
       });
       html+='</div>';
     });
@@ -690,7 +794,7 @@ function renderSchedule() {
 function renderScores() {
   const matches=getFiltered(); const scores=calcScores(matches);
   const ri=matches.filter(m=>results[m.id]).length;
-  if (!ri) { document.getElementById('mainContent').innerHTML=`<div class="no-results"><div class="icon">🏆</div><p>No results yet</p><small>Hit <strong>⚡ Auto-sync results</strong> to pull in completed match winners.</small></div>`; return; }
+  if (!ri) { document.getElementById('mainContent').innerHTML=`<div class="no-results"><div class="icon">🏆</div><p>No results yet</p><small>Enable <strong>🔒 Results</strong> in the toolbar, then tap <strong>Enter result</strong> on any completed match card.</small></div>`; return; }
   const sorted=[...players].sort((a,b)=>(scores[b.id]?.correct||0)-(scores[a.id]?.correct||0));
   const medals=['🥇','🥈','🥉'];
   let html=`<div class="leaderboard"><div class="lb-title">🏆 Leaderboard</div><div class="lb-subtitle">${ri} result${ri!==1?'s':''} recorded</div>`;
